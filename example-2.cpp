@@ -26,7 +26,7 @@ void solveInnerKernel(std::vector<double>& residual) {
 }
 
 int main() {
-    diffdbg::init(diffdbg::modeFromEnv(), diffdbg::fileFromEnv());
+    diffdbg::init(diffdbg::modeFromEnv(), diffdbg::fileFromEnv(), diffdbg::strategyFromEnv());
 
     const size_t N = 100;
     std::vector<double> velocity(N), pressure(N), residual(N);

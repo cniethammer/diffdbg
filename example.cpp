@@ -14,7 +14,7 @@
 #include <vector>
 
 int main() {
-    diffdbg::init(diffdbg::modeFromEnv(), diffdbg::fileFromEnv());
+    diffdbg::init(diffdbg::modeFromEnv(), diffdbg::fileFromEnv(), diffdbg::strategyFromEnv());
 
     const size_t N = 1000;
     std::vector<double> velocity(N), pressure(N);
