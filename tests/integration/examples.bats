@@ -87,6 +87,12 @@ setup() {
     assert_failure 133
 }
 
+@test "example with unknown strategy reports warning" {
+    run env DIFFDBG_MODE=record DIFFDBG_FILE=ref-warn.bin DIFFDBG_STRATEGY=UnknownStrategy $EXAMPLE_DIR/example
+    assert_success
+    assert_output --partial "WARNING: unknown DIFFDBG_STRATEGY='UnknownStrategy', using 'full'"
+}
+
 teardown() {
     rm -f ref*.bin
 }
