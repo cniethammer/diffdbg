@@ -37,9 +37,9 @@
 //     tagged, with no extra parameters needed at the call site itself:
 //
 //       for (int step = 0; step < nSteps; ++step) {
-//           diffdbg::ScopedContext ctxStep(step);
+//           DIFFDBG_SCOPE(step);
 //           for (int substep = 0; substep < nSub; ++substep) {
-//               diffdbg::ScopedContext ctxSub(substep);
+//               DIFFDBG_SCOPE(substep);
 //               solveInnerKernel(...);   // many frames deep, no index param
 //           }
 //       }
