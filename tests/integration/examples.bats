@@ -91,6 +91,7 @@ setup() {
     assert_success
     assert_output --partial "WARNING: unknown DIFFDBG_STRATEGY='UnknownStrategy', using 'full'"
 }
+
 @test "strategy mismatch between record and check warns" {
     # Record with Full strategy
     DIFFDBG_MODE=record DIFFDBG_FILE=ref-mismatch.bin DIFFDBG_STRATEGY=Full $EXAMPLE_DIR/example
@@ -103,6 +104,32 @@ setup() {
     assert_output --partial "MISMATCH"
     assert_failure 133
 }
+
+@test "example-mpi runs with 2 processes" {
+    run mpirun -n 2 $EXAMPLE_DIR/example-mpi
+    assert_success
+}
+
+@test "example-mpi creates reference files with 2 processes" {
+    DIFFDBG_MODE=record DIFFDBG_FILE=ref-mpi.bin mpirun -n 2 $EXAMPLE_DIR/example-mpi
+    # MPI creates separate files per rank
+    assert_exists ref-mpi.rank0.bin
+    assert_exists ref-mpi.rank1.bin
+}
+
+@test "example-mpi detects mismatch in check mode with 2 processes" {
+    DIFFDBG_MODE=record DIFFDBG_FILE=ref-mpi.bin mpirun -n 2 $EXAMPLE_DIR/example-mpi
+    assert_exists ref-mpi.rank0.bin
+    assert_exists ref-mpi.rank1.bin
+    # The bug only appears on rank 1, step 3
+    run env DIFFDBG_MODE=check DIFFDBG_FILE=ref-mpi.bin mpirun -n 2 $EXAMPLE_DIR/example-mpi
+    assert_output --partial "[diffdbg r1] MISMATCH"
+    assert_output --partial "label='velocity'"
+    assert_output --partial "idx=(3)"
+    assert_output --partial "index=42"
+    assert_failure 133
+}
+
 teardown() {
     rm -f ref*.bin
 }

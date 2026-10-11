@@ -13,3 +13,12 @@ set_target_properties(example scoped precision PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
 )
+
+# Find MPI for example-mpi
+find_package(MPI REQUIRED)
+add_executable(example-mpi example-mpi.cpp)
+target_link_libraries(example-mpi PRIVATE diffdbg::diffdbg MPI::MPI_CXX)
+set_target_properties(example-mpi PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
