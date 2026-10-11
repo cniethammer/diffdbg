@@ -480,9 +480,9 @@ class Debugger {
     const Record& ref = it->second;
 
     if (ref.strategy != config().strategy && !strategyMismatchWarned_ && std::getenv("DIFFDBG_STRATEGY")) {
-      std::cerr << tag() << " NOTE: reference was recorded with strategy='" << strategyName(ref.strategy)
-                << "'; using that for checking (DIFFDBG_STRATEGY='" << strategyName(config().strategy)
-                << "' only applies to record runs)\n";
+      std::cerr << tag() << " WARNING: reference was recorded with strategy='" << strategyName(ref.strategy)
+                << "' overriding DIFFDBG_STRATEGY='" << strategyName(config().strategy)
+                << "' with '" << strategyName(ref.strategy) << "'\n";
       strategyMismatchWarned_ = true;
     }
 
