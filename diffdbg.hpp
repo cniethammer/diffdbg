@@ -77,6 +77,30 @@
 // always uses whatever strategy the reference was recorded with (a warning is
 // printed if DIFFDBG_STRATEGY disagrees).
 //
+// MPI / multi-process runs (no MPI dependency, works with any launcher):
+//
+//   Every process gets its own reference file, because each rank holds
+//   different data. The rank is detected from the launcher's environment
+//   (DIFFDBG_RANK, OMPI_COMM_WORLD_RANK, PMIX_RANK, PMI_RANK,
+//   MV2_COMM_WORLD_RANK, SLURM_PROCID, PMI_ID -- first one found wins).
+//   With file "ref.bin", rank 3 uses "ref.rank3.bin". Put "%r" in the file
+//   name to control placement, e.g. DIFFDBG_FILE=/scratch/run1/%r/ref.bin
+//   (the directory must exist). Messages are tagged "[diffdbg rN]".
+//
+//   If your launcher isn't detected, or you prefer to be explicit:
+//       MPI_Init(&argc, &argv);
+//       MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+//       diffdbg::setRank(rank);              // BEFORE diffdbg::init()
+//       diffdbg::init(diffdbg::modeFromEnv(), diffdbg::fileFromEnv(), diffdbg::strategyFromEnv());
+//       ...
+//       diffdbg::finalize();                 // before MPI_Finalize() is fine
+//
+//   Restrict checking to a single rank (handy when debugging interactively):
+//       DIFFDBG_ONLY_RANK=2   -> all other ranks run with diffdbg off.
+//
+//   Record and check runs must use the same number of ranks and the same
+//   domain decomposition, since each rank is compared with its own file.
+//
 // Then:
 //   DIFFDBG_MODE=record DIFFDBG_STRATEGY=stats DIFFDBG_FILE=ref.bin ./app   # reference run
 //   DIFFDBG_MODE=check  DIFFDBG_FILE=ref.bin gdb ./app                      # comparison run
@@ -90,6 +114,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
@@ -120,6 +145,7 @@ enum class Strategy : uint32_t { Full = 0, First = 1, Hash = 2, Stats = 3 };
 struct Config {
   Mode mode = Mode::Off;
   Strategy strategy = Strategy::Full;  // strategy used when *recording*
+  int rank = -1;                       // process rank, -1 = not a multi-process run
   std::string referenceFile = "diffdbg_reference.bin";
   double relTol = 1e-9;   // relative tolerance for floating point compare
   double absTol = 1e-12;  // absolute tolerance floor
@@ -131,6 +157,63 @@ struct Config {
 inline Config& config() {
   static Config cfg;
   return cfg;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-process (MPI) support
+//
+// No MPI headers needed: the rank comes from the launcher's environment or
+// from an explicit setRank() call. Each rank uses its own reference file.
+// ---------------------------------------------------------------------------
+
+inline int& rankStorage() {
+  static int r = -2;  // -2: not detected yet, -1: no rank (single process)
+  return r;
+}
+
+inline int detectRankFromEnv() {
+  static const char* vars[] = {"DIFFDBG_RANK",        "OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK",
+                               "MV2_COMM_WORLD_RANK", "SLURM_PROCID",         "PMI_ID"};
+  for (const char* var : vars) {
+    const char* v = std::getenv(var);
+    if (v && *v) {
+      char* end = nullptr;
+      long r = std::strtol(v, &end, 10);
+      if (end != v && r >= 0) return static_cast<int>(r);
+    }
+  }
+  return -1;
+}
+
+// Explicitly set the rank (call before init()). Negative = single process.
+inline void setRank(int r) { rankStorage() = r < 0 ? -1 : r; }
+
+inline int rank() {
+  int& r = rankStorage();
+  if (r == -2) r = detectRankFromEnv();
+  return r;
+}
+
+// Prefix for log messages: "[diffdbg]" or "[diffdbg r3]".
+inline std::string tag() {
+  int r = rank();
+  return r >= 0 ? "[diffdbg r" + std::to_string(r) + "]" : std::string("[diffdbg]");
+}
+
+// "ref.bin" -> "ref.rank3.bin" (or every "%r" replaced by the rank number).
+inline std::string resolveReferenceFile(const std::string& file, int r) {
+  if (r < 0) return file;
+  const std::string rs = std::to_string(r);
+  if (file.find("%r") != std::string::npos) {
+    std::string out = file;
+    for (size_t p = out.find("%r"); p != std::string::npos; p = out.find("%r", p + rs.size())) out.replace(p, 2, rs);
+    return out;
+  }
+  const std::string suffix = ".rank" + rs;
+  size_t slash = file.find_last_of("/\\");
+  size_t dot = file.find_last_of('.');
+  if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) return file + suffix;
+  return file.substr(0, dot) + suffix + file.substr(dot);
 }
 
 // Read mode/file/strategy from environment variables, useful so the *same*
@@ -176,7 +259,7 @@ inline Strategy strategyFromEnv(const char* var = "DIFFDBG_STRATEGY", Strategy f
   if (s == "first") return Strategy::First;
   if (s == "hash") return Strategy::Hash;
   if (s == "stats") return Strategy::Stats;
-  std::cerr << "[diffdbg] WARNING: unknown " << var << "='" << v << "', using '" << strategyName(fallback)
+  std::cerr << tag() << " WARNING: unknown " << var << "='" << v << "', using '" << strategyName(fallback)
             << "' (valid: full, first, hash, stats)\n";
   return fallback;
 }
@@ -338,18 +421,23 @@ class Debugger {
 
   void init(Mode mode, const std::string& file, Strategy strategy) {
     std::lock_guard<std::mutex> lock(mutex_);
+    const int r = rank();
+    if (const char* only = std::getenv("DIFFDBG_ONLY_RANK")) {
+      if (r >= 0 && std::atoi(only) != r) mode = Mode::Off;  // this rank opts out
+    }
     config().mode = mode;
-    config().referenceFile = file;
+    config().rank = r;
+    config().referenceFile = resolveReferenceFile(file, r);
     config().strategy = strategy;
     mismatchCount_ = 0;
     strategyMismatchWarned_ = false;
     if (mode == Mode::Check) {
-      loadReference(file);
+      loadReference(config().referenceFile);
     } else if (mode == Mode::Record) {
       records_.clear();
     }
     if (config().mode != Mode::Off) {
-      std::cerr << "[diffdbg] mode=" << modeName(mode) << " file=" << file;
+      std::cerr << tag() << " mode=" << modeName(mode) << " file=" << config().referenceFile;
       if (mode == Mode::Record) std::cerr << " strategy=" << strategyName(strategy);
       std::cerr << "\n";
     }
@@ -360,10 +448,10 @@ class Debugger {
     std::lock_guard<std::mutex> lock(mutex_);
     if (config().mode == Mode::Record) {
       saveReference(config().referenceFile);
-      std::cerr << "[diffdbg] wrote " << records_.size() << " reference entries to " << config().referenceFile
+      std::cerr << tag() << " wrote " << records_.size() << " reference entries to " << config().referenceFile
                 << " (strategy=" << strategyName(config().strategy) << ")\n";
     } else if (config().mode == Mode::Check) {
-      std::cerr << "[diffdbg] check run finished, mismatches=" << mismatchCount_ << "\n";
+      std::cerr << tag() << " check run finished, mismatches=" << mismatchCount_ << "\n";
     }
   }
 
@@ -385,14 +473,14 @@ class Debugger {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = reference_.find(key);
     if (it == reference_.end()) {
-      std::cerr << "[diffdbg] WARNING: no reference entry for label='" << label << "' idx=" << idxStr
+      std::cerr << tag() << " WARNING: no reference entry for label='" << label << "' idx=" << idxStr
                 << " (skipping)\n";
       return;
     }
     const Record& ref = it->second;
 
-    if (ref.strategy != config().strategy && !strategyMismatchWarned_) {
-      std::cerr << "[diffdbg] NOTE: reference was recorded with strategy='" << strategyName(ref.strategy)
+    if (ref.strategy != config().strategy && !strategyMismatchWarned_ && std::getenv("DIFFDBG_STRATEGY")) {
+      std::cerr << tag() << " NOTE: reference was recorded with strategy='" << strategyName(ref.strategy)
                 << "'; using that for checking (DIFFDBG_STRATEGY='" << strategyName(config().strategy)
                 << "' only applies to record runs)\n";
       strategyMismatchWarned_ = true;
@@ -400,7 +488,7 @@ class Debugger {
 
     // The shape is stored for every strategy, so always verify it first.
     if (ref.count != count || ref.elemSize != sizeof(T)) {
-      std::cerr << "[diffdbg] MISMATCH (shape) label='" << label << "' idx=" << idxStr << " ref.count=" << ref.count
+      std::cerr << tag() << " MISMATCH (shape) label='" << label << "' idx=" << idxStr << " ref.count=" << ref.count
                 << " cur.count=" << count << " ref.elemSize=" << ref.elemSize << " cur.elemSize=" << sizeof(T) << "\n";
       ++mismatchCount_;
       triggerBreak();
@@ -428,7 +516,7 @@ class Debugger {
       ++mismatchCount_;
       triggerBreak();
     } else if (config().verboseOk) {
-      std::cerr << "[diffdbg] OK label='" << label << "' idx=" << idxStr << " (" << count << " elems, "
+      std::cerr << tag() << " OK label='" << label << "' idx=" << idxStr << " (" << count << " elems, "
                 << strategyName(ref.strategy) << ")\n";
     }
   }
@@ -486,8 +574,8 @@ class Debugger {
     if (s == Strategy::Stats && !std::is_arithmetic<T>::value) {
       static bool warned = false;
       if (!warned) {
-        std::cerr << "[diffdbg] WARNING: strategy 'stats' needs arithmetic element types; falling back to "
-                     "'hash' for type "
+        std::cerr << tag()
+                  << " WARNING: strategy 'stats' needs arithmetic element types; falling back to 'hash' for type "
                   << typeid(T).name() << "\n";
         warned = true;
       }
@@ -541,7 +629,7 @@ class Debugger {
     for (size_t i = 0; i < n; ++i) {
       if (!approxEqual(refData[i], data[i])) {
         bad = true;
-        std::cerr << "[diffdbg] MISMATCH label='" << label << "' idx=" << idxStr << " index=" << i
+        std::cerr << tag() << " MISMATCH label='" << label << "' idx=" << idxStr << " index=" << i
                   << " ref=" << toStr(refData[i]) << " cur=" << toStr(data[i]) << "\n";
         if (config().stopAtFirstElement) break;
       }
@@ -554,13 +642,13 @@ class Debugger {
                    size_t count) const {
     uint64_t refHash = 0;
     if (ref.bytes.size() != sizeof(refHash)) {
-      std::cerr << "[diffdbg] ERROR: corrupt hash entry for label='" << label << "' idx=" << idxStr << "\n";
+      std::cerr << tag() << " ERROR: corrupt hash entry for label='" << label << "' idx=" << idxStr << "\n";
       return true;
     }
     std::memcpy(&refHash, ref.bytes.data(), sizeof(refHash));
     uint64_t curHash = fnv1a64(data, count * sizeof(T));
     if (refHash == curHash) return false;
-    std::cerr << "[diffdbg] MISMATCH (hash) label='" << label << "' idx=" << idxStr << " ref=" << hex64(refHash)
+    std::cerr << tag() << " MISMATCH (hash) label='" << label << "' idx=" << idxStr << " ref=" << hex64(refHash)
               << " cur=" << hex64(curHash) << " (" << count
               << " elems; re-record with DIFFDBG_STRATEGY=full to locate the element)\n";
     return true;
@@ -571,7 +659,7 @@ class Debugger {
                     size_t count) const {
     StatsPayload r;
     if (ref.bytes.size() != sizeof(r)) {
-      std::cerr << "[diffdbg] ERROR: corrupt stats entry for label='" << label << "' idx=" << idxStr << "\n";
+      std::cerr << tag() << " ERROR: corrupt stats entry for label='" << label << "' idx=" << idxStr << "\n";
       return true;
     }
     std::memcpy(&r, ref.bytes.data(), sizeof(r));
@@ -581,7 +669,7 @@ class Debugger {
     auto cmp = [&](const char* what, double a, double b, double scale) {
       if (!closeEnough(a, b, scale)) {
         bad = true;
-        std::cerr << "[diffdbg] MISMATCH (stats) label='" << label << "' idx=" << idxStr << " " << what
+        std::cerr << tag() << " MISMATCH (stats) label='" << label << "' idx=" << idxStr << " " << what
                   << " ref=" << std::setprecision(17) << a << " cur=" << b << "\n";
       }
     };
@@ -593,7 +681,7 @@ class Debugger {
     cmp("mean", r.mean, c.mean, scale);
     if (r.nonFinite != c.nonFinite) {
       bad = true;
-      std::cerr << "[diffdbg] MISMATCH (stats) label='" << label << "' idx=" << idxStr
+      std::cerr << tag() << " MISMATCH (stats) label='" << label << "' idx=" << idxStr
                 << " non-finite count ref=" << r.nonFinite << " cur=" << c.nonFinite << "\n";
     }
     return bad;
@@ -601,7 +689,8 @@ class Debugger {
 
   void triggerBreak() {
     if (!config().breakOnMismatch) return;
-    std::cerr << "[diffdbg] trapping into debugger (attach with a debugger, or run "
+    std::cerr << tag()
+              << " trapping into debugger (attach with a debugger, or run "
                  "the whole process under gdb/rr, to catch this)\n";
 #if defined(_MSC_VER)
     __debugbreak();
@@ -642,7 +731,7 @@ class Debugger {
   void saveReference(const std::string& file) {
     std::ofstream out(file, std::ios::binary);
     if (!out) {
-      std::cerr << "[diffdbg] ERROR: cannot open '" << file << "' for writing\n";
+      std::cerr << tag() << " ERROR: cannot open '" << file << "' for writing\n";
       return;
     }
     out.write(kMagic, sizeof(kMagic));
@@ -672,13 +761,13 @@ class Debugger {
     reference_.clear();
     std::ifstream in(file, std::ios::binary);
     if (!in) {
-      std::cerr << "[diffdbg] ERROR: cannot open reference file '" << file << "'\n";
+      std::cerr << tag() << " ERROR: cannot open reference file '" << file << "'\n";
       return;
     }
     char magic[sizeof(kMagic)] = {};
     in.read(magic, sizeof(magic));
     if (!in || std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) {
-      std::cerr << "[diffdbg] ERROR: '" << file
+      std::cerr << tag() << " ERROR: '" << file
                 << "' is not a diffdbg reference file (or was written by an older, incompatible version)\n";
       return;
     }
@@ -707,7 +796,7 @@ class Debugger {
       if (payload) in.read(reinterpret_cast<char*>(rec.bytes.data()), static_cast<std::streamsize>(payload));
       reference_[key] = std::move(rec);
     }
-    if (!in) std::cerr << "[diffdbg] WARNING: reference file '" << file << "' appears truncated\n";
+    if (!in) std::cerr << tag() << " WARNING: reference file '" << file << "' appears truncated\n";
   }
 };
 
