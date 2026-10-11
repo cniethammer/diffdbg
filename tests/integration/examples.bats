@@ -93,14 +93,12 @@ setup() {
 }
 @test "strategy mismatch between record and check warns" {
     # Record with Full strategy
-    DIFFDBG_MODE=record DIFFDBG_FILE=ref-mismatch.bin DIFFDBG_STRATEGY=full $EXAMPLE_DIR/example
+    DIFFDBG_MODE=record DIFFDBG_FILE=ref-mismatch.bin DIFFDBG_STRATEGY=Full $EXAMPLE_DIR/example
     assert_exists ref-mismatch.bin
 
     # Check with First strategy - should warn about mismatch
-    run env DIFFDBG_MODE=check DIFFDBG_FILE=ref-mismatch.bin DIFFDBG_STRATEGY=first $EXAMPLE_DIR/example
-    assert_output --partial "WARNING"
-    assert_output --partial "reference was recorded with strategy='full'"
-    assert_output --partial "overriding DIFFDBG_STRATEGY='first' with 'full'"
+    run env DIFFDBG_MODE=check DIFFDBG_FILE=ref-mismatch.bin DIFFDBG_STRATEGY=First $EXAMPLE_DIR/example
+    assert_output --partial "WARNING: reference was recorded with strategy='full' overriding DIFFDBG_STRATEGY='first' with 'full'"
     # Should still run and detect mismatch
     assert_output --partial "MISMATCH"
     assert_failure 133
