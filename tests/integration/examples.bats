@@ -53,7 +53,7 @@ setup() {
     assert_failure 133
 }
 
-@test "scoped does not detects mismatch in check mode with strategy=First" {
+@test "scoped does not detect mismatch in check mode with strategy=First" {
     DIFFDBG_MODE=record DIFFDBG_FILE=ref-scoped.bin DIFFDBG_STRATEGY=First $EXAMPLE_DIR/scoped
     assert_exists ref-scoped.bin
     run env DIFFDBG_MODE=check DIFFDBG_FILE=ref-scoped.bin DIFFDBG_STRATEGY=First $EXAMPLE_DIR/scoped
@@ -61,7 +61,6 @@ setup() {
     # Faulty value at index 7 is not detected with strategy=First, so the test should pass
     assert_success
 }
-
 
 @test "precision with Full strategy detects mismatch" {
     DIFFDBG_MODE=record DIFFDBG_FILE=ref-prec-full.bin DIFFDBG_STRATEGY=Full $EXAMPLE_DIR/precision
