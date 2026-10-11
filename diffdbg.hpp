@@ -288,7 +288,8 @@ template <typename T>
 StatsPayload computeStats(const T* data, size_t count) {
   StatsPayload s;
   if constexpr (std::is_arithmetic<T>::value) {
-    long double sum = 0.0L;
+    if (count == 0) return s;
+
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
       double v = static_cast<double>(data[i]);
@@ -298,14 +299,19 @@ StatsPayload computeStats(const T* data, size_t count) {
       }
       if (n == 0) {
         s.min = s.max = v;
+        s.mean = v;
       } else {
         if (v < s.min) s.min = v;
         if (v > s.max) s.max = v;
+        // Welford's online algorithm for numerically stable mean
+        s.mean += (v - s.mean) / static_cast<double>(n + 1);
       }
-      sum += v;
       ++n;
     }
-    s.mean = n ? static_cast<double>(sum / static_cast<long double>(n)) : 0.0;
+    // If all values were non-finite, reset to defaults
+    if (n == 0) {
+      s.min = s.max = s.mean = 0.0;
+    }
   }
   return s;
 }
